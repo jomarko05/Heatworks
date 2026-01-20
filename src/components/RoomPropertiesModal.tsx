@@ -16,29 +16,49 @@ export default function RoomPropertiesModal() {
 
   const handleGenerate = () => {
     if (!name.trim()) {
-      alert('Please enter a room name')
+      alert('Kérem adja meg a szoba nevét')
       return
     }
 
     if (!pdf.pxPerMeter) {
-      alert('Please calibrate the scale first')
+      alert('Kérem először kalibrálja a léptéket')
       return
     }
 
-    // Set properties
+    // Set properties (connectionSide removed - using smart connection point instead)
     setPendingRoomProperties(name, systemType, orientation)
 
+    // Early return if pendingRoom is null (TypeScript safety)
+    if (!roomDrawing.pendingRoom) {
+      console.error('pendingRoom is null after setting properties')
+      return
+    }
+
     // Generate grid
-    const calculator = new GridCalculator(pdf.pxPerMeter)
+    const { settings } = useStore.getState()
+    const calculator = new GridCalculator(pdf.pxPerMeter, settings)
+    const pendingRoom = roomDrawing.pendingRoom // Cache for type safety
     const roomWithGrid = calculator.generateRoomGrid({
-      ...roomDrawing.pendingRoom,
+      id: pendingRoom.id,
+      points: pendingRoom.points,
+      cdProfiles: pendingRoom.cdProfiles,
+      heatPlates: pendingRoom.heatPlates,
+      area: pendingRoom.area,
+      profileStats: pendingRoom.profileStats,
+      plateMaterials: pendingRoom.plateMaterials,
+      connectionSide: 'bottom', // Legacy field, not used (replaced by connectionPoint)
+      heatingCircuits: pendingRoom.heatingCircuits,
       name,
       systemType,
       orientation,
     })
 
     // Update the pending room with generated data
-    setPendingRoomProperties(roomWithGrid.name, roomWithGrid.systemType, roomWithGrid.orientation)
+    setPendingRoomProperties(
+      roomWithGrid.name,
+      roomWithGrid.systemType,
+      roomWithGrid.orientation
+    )
     
     // We need to also update the cdProfiles and area
     // Let's update the store to handle this
@@ -68,7 +88,7 @@ export default function RoomPropertiesModal() {
       >
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-gray-800">Room Properties</h2>
+          <h2 className="text-xl font-bold text-gray-800">Szoba Tulajdonságok</h2>
           <button
             onClick={handleCancel}
             className="text-gray-500 hover:text-gray-700 transition-colors"
@@ -82,13 +102,13 @@ export default function RoomPropertiesModal() {
           {/* Name */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Room Name
+              Szoba Neve
             </label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., Nappali"
+              placeholder="pl. Nappali"
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
               autoFocus
             />
@@ -97,22 +117,22 @@ export default function RoomPropertiesModal() {
           {/* System Type */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              System Type
+              Rendszer Típus
             </label>
             <select
               value={systemType}
               onChange={(e) => setSystemType(e.target.value as SystemType)}
               className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="System 4">System 4</option>
-              <option value="System 6">System 6</option>
+              <option value="System 4">Rendszer 4</option>
+              <option value="System 6">Rendszer 6</option>
             </select>
           </div>
 
           {/* Orientation */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Profile Orientation
+              Fektetési Irány
             </label>
             <div className="flex gap-2">
               <button
@@ -123,7 +143,7 @@ export default function RoomPropertiesModal() {
                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                 }`}
               >
-                Vertical
+                Függőleges
               </button>
               <button
                 onClick={() => setOrientation('Horizontal')}
@@ -133,7 +153,7 @@ export default function RoomPropertiesModal() {
                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                 }`}
               >
-                Horizontal
+                Vízszintes
               </button>
             </div>
           </div>
@@ -158,13 +178,13 @@ export default function RoomPropertiesModal() {
             onClick={handleCancel}
             className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400 transition-colors"
           >
-            Cancel
+            Mégse
           </button>
           <button
             onClick={handleGenerate}
             className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
           >
-            Generate Layout
+            Raszter Generálása
           </button>
         </div>
       </div>

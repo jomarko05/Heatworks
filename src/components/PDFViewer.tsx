@@ -1,16 +1,18 @@
-import { useRef } from 'react'
+import { useRef, useEffect } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { useStore } from '../store/useStore'
 import CanvasOverlay from './CanvasOverlay'
 
-// CRITICAL: Point to the static file in the public folder
-pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
+// CRITICAL: Use BASE_URL for GitHub Pages compatibility
+// This ensures the worker loads from the correct subfolder path
+// @ts-ignore - Vite env typing
+pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`
 
 interface PDFViewerProps {
   containerRef: React.RefObject<HTMLDivElement>
 }
 
-export default function PDFViewer({ containerRef }: PDFViewerProps) {
+export default function PDFViewer({ containerRef: _containerRef }: PDFViewerProps) {
   const { pdf, setNumPages, setPageDimensions, setViewScale } = useStore()
   const wrapperRef = useRef<HTMLDivElement>(null)
 
@@ -29,22 +31,35 @@ export default function PDFViewer({ containerRef }: PDFViewerProps) {
   }
 
   // Unified zoom handler for PDF + Canvas
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault()
-    
-    const zoomFactor = 0.1
-    let newScale = pdf.viewScale
+  // Use native event listener with { passive: false } to allow preventDefault
+  useEffect(() => {
+    const node = wrapperRef.current
+    if (!node) return
 
-    if (e.deltaY < 0) {
-      // Zoom in
-      newScale = Math.min(pdf.viewScale + zoomFactor, 3.0)
-    } else {
-      // Zoom out
-      newScale = Math.max(pdf.viewScale - zoomFactor, 0.3)
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault() // Now valid because of passive: false
+      
+      const zoomFactor = 0.1
+      let newScale = pdf.viewScale
+
+      if (e.deltaY < 0) {
+        // Zoom in - Infinite zoom capability (50x max for professional CAD work)
+        newScale = Math.min(pdf.viewScale + zoomFactor, 50.0)
+      } else {
+        // Zoom out
+        newScale = Math.max(pdf.viewScale - zoomFactor, 0.1) // Allow zooming out further
+      }
+
+      setViewScale(newScale)
     }
 
-    setViewScale(newScale)
-  }
+    // CRITICAL: Add { passive: false } to allow preventDefault
+    node.addEventListener('wheel', handleWheel, { passive: false })
+    
+    return () => {
+      node.removeEventListener('wheel', handleWheel)
+    }
+  }, [pdf.viewScale, setViewScale])
 
   const hasValidDimensions = pdf.pageWidth > 0 && pdf.pageHeight > 0
   
@@ -68,12 +83,12 @@ export default function PDFViewer({ containerRef }: PDFViewerProps) {
           <div
             ref={wrapperRef}
             className="relative inline-block"
-            onWheel={handleWheel}
             style={{
               width: hasValidDimensions ? scaledWidth : 'auto',
               height: hasValidDimensions ? scaledHeight : 'auto',
               minWidth: 100,
               minHeight: 100,
+              touchAction: 'none', // Prevent default touch behaviors (scrolling, zooming)
             }}
           >
             {/* PDF Layer - Scales up the rendered PDF */}

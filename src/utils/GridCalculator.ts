@@ -1,4 +1,5 @@
-import { Point, CDProfile, HeatPlate, Orientation, Room, SystemType } from '../types'
+import { Point, CDProfile, HeatPlate, HeatingCircuit, Orientation, Room, SystemType, GlobalSettings, PipePattern } from '../types'
+// Assets migrated to src/data/assets/ - manual CAD tools handle placement
 
 interface BoundingBox {
   minX: number
@@ -11,15 +12,13 @@ interface BoundingBox {
 
 export class GridCalculator {
   private pxPerMeter: number
-  private readonly CD_PROFILE_WIDTH_MM = 60 // 6cm width (Blue Profiles)
-  private readonly CD_PROFILE_SPACING_MM = 400 // 40cm spacing (axis to axis)
-  private readonly WALL_BUFFER_MM = 250 // 25cm minimum buffer (Turning Zone)
+  private settings: GlobalSettings
   private readonly LENGTH_STEP_MM = 100 // 10cm quantization step
-  private readonly GRID_MARGIN_MM = 100 // 10cm minimum margin from walls (perpendicular to profiles)
   private readonly MIN_PROFILE_LENGTH_MM = 1000 // 1m minimum profile length
 
-  constructor(pxPerMeter: number) {
+  constructor(pxPerMeter: number, settings: GlobalSettings) {
     this.pxPerMeter = pxPerMeter
+    this.settings = settings
   }
 
   /**
@@ -177,10 +176,9 @@ export class GridCalculator {
     const { points, orientation } = room
     const bbox = this.getBoundingBox(points)
     
-    const profileWidth = this.mmToPx(this.CD_PROFILE_WIDTH_MM)
-    const spacing = this.mmToPx(this.CD_PROFILE_SPACING_MM)
-    const bufferPx = this.mmToPx(this.WALL_BUFFER_MM)
-    const gridMarginPx = this.mmToPx(this.GRID_MARGIN_MM)
+    const profileWidth = this.mmToPx(this.settings.cdProfileWidth)
+    const spacing = this.mmToPx(this.settings.cdProfileSpacing)
+    const bufferPx = this.mmToPx(this.settings.wallBuffer)
 
     const profiles: CDProfile[] = []
 
@@ -191,19 +189,19 @@ export class GridCalculator {
       const roomWidth = bbox.maxX - bbox.minX
       const roomWidthMM = (roomWidth / this.pxPerMeter) * 1000
       
-      // Usable width (minus 10cm on both sides)
-      const usableWidthMM = roomWidthMM - (2 * this.GRID_MARGIN_MM)
+      // Usable width (minus margin on both sides)
+      const usableWidthMM = roomWidthMM - (2 * this.settings.gridMargin)
       
       // Count profiles: floor(usableWidth / spacing) + 1
-      const profileCount = Math.floor(usableWidthMM / this.CD_PROFILE_SPACING_MM) + 1
+      const profileCount = Math.floor(usableWidthMM / this.settings.cdProfileSpacing) + 1
       
       if (profileCount < 1) {
-        console.warn('Room too narrow for vertical profiles with 10cm margins')
+        console.warn('Room too narrow for vertical profiles with margins')
         return []
       }
       
       // Total grid span
-      const totalGridSpanMM = (profileCount - 1) * this.CD_PROFILE_SPACING_MM
+      const totalGridSpanMM = (profileCount - 1) * this.settings.cdProfileSpacing
       const totalGridSpanPx = this.mmToPx(totalGridSpanMM)
       
       // Calculate start offset (centered)
@@ -311,19 +309,19 @@ export class GridCalculator {
       const roomHeight = bbox.maxY - bbox.minY
       const roomHeightMM = (roomHeight / this.pxPerMeter) * 1000
       
-      // Usable height (minus 10cm on both sides)
-      const usableHeightMM = roomHeightMM - (2 * this.GRID_MARGIN_MM)
+      // Usable height (minus margin on both sides)
+      const usableHeightMM = roomHeightMM - (2 * this.settings.gridMargin)
       
       // Count profiles: floor(usableHeight / spacing) + 1
-      const profileCount = Math.floor(usableHeightMM / this.CD_PROFILE_SPACING_MM) + 1
+      const profileCount = Math.floor(usableHeightMM / this.settings.cdProfileSpacing) + 1
       
       if (profileCount < 1) {
-        console.warn('Room too short for horizontal profiles with 10cm margins')
+        console.warn('Room too short for horizontal profiles with margins')
         return []
       }
       
       // Total grid span
-      const totalGridSpanMM = (profileCount - 1) * this.CD_PROFILE_SPACING_MM
+      const totalGridSpanMM = (profileCount - 1) * this.settings.cdProfileSpacing
       const totalGridSpanPx = this.mmToPx(totalGridSpanMM)
       
       // Calculate start offset (centered)
@@ -442,33 +440,29 @@ export class GridCalculator {
     const plates: HeatPlate[] = []
     
     // ============================================
-    // FIXED CONSTANTS (The 'Recipes' - CORRECTED)
+    // PARAMETRIC SETTINGS (from GlobalSettings)
     // ============================================
-    const BROWN_PLATE_WIDTH_MM = 50 // Brown plate width
-    const BLUE_PROFILE_WIDTH_MM = 60 // Blue CD profile width
+    const plateWidthMM = this.settings.plateWidth
+    const blueProfileWidthMM = this.settings.cdProfileWidth
     
-    // System-specific spacing (User-Provided, UPDATED for 2mm side margins)
-    const SYSTEM_4_GAP_MM = 45.333333  // Gap between plates for System 4: (4×50) + (3×45.33) = 336mm
-    const SYSTEM_6_GAP_MM = 7.2        // Gap between plates for System 6: (6×50) + (5×7.2) = 336mm
-    const TOTAL_SPAN_MM = 336.0        // Total span for both systems (allows 2mm margins each side)
-    const VISUAL_OFFSET_MM = 30.0      // Global shift to compensate for coordinate origin mismatch (RETAINED)
+    // System-specific spacing from settings
+    const gapBetweenPlatesMM = systemType === 'System 4' ? this.settings.system4Gap : this.settings.system6Gap
     
-    const plateWidthPx = this.mmToPx(BROWN_PLATE_WIDTH_MM)
-    const blueProfileWidthPx = this.mmToPx(BLUE_PROFILE_WIDTH_MM)
-    const totalSpanPx = this.mmToPx(TOTAL_SPAN_MM)
-    const visualOffsetPx = this.mmToPx(VISUAL_OFFSET_MM)
-    
-    // Determine plate count based on system type
+    // Calculate total span: (plateCount × plateWidth) + ((plateCount - 1) × gap)
     const plateCount = systemType === 'System 4' ? 4 : 6
-
-    // Calculate system-specific spacing
-    const gapBetweenPlatesMM = systemType === 'System 4' ? SYSTEM_4_GAP_MM : SYSTEM_6_GAP_MM
+    const TOTAL_SPAN_MM = (plateCount * plateWidthMM) + ((plateCount - 1) * gapBetweenPlatesMM)
+    
+    const plateWidthPx = this.mmToPx(plateWidthMM)
+    const blueProfileWidthPx = this.mmToPx(blueProfileWidthMM)
+    const totalSpanPx = this.mmToPx(TOTAL_SPAN_MM)
+    const visualOffsetPx = this.mmToPx(this.settings.visualOffset)
+    
     const gapBetweenPlatesPx = this.mmToPx(gapBetweenPlatesMM)
     const stridePx = plateWidthPx + gapBetweenPlatesPx // Distance between plate starts
     
     console.log(`\n=== Generating Heat Plates (${systemType}, ${plateCount} plates per gap) ===`)
-    console.log(`Physical Gap Center Method (2mm side margins, -30mm offset)`)
-    console.log(`Recipe: ${plateCount}×50mm + ${plateCount - 1}×${gapBetweenPlatesMM.toFixed(2)}mm = ${TOTAL_SPAN_MM}mm | Stride: ${(stridePx / this.pxPerMeter * 1000).toFixed(2)}mm`)
+    console.log(`Physical Gap Center Method (2mm side margins, offset: ${this.settings.visualOffset}mm)`)
+    console.log(`Recipe: ${plateCount}×${plateWidthMM}mm + ${plateCount - 1}×${gapBetweenPlatesMM.toFixed(2)}mm = ${TOTAL_SPAN_MM.toFixed(2)}mm | Stride: ${(stridePx / this.pxPerMeter * 1000).toFixed(2)}mm`)
 
     // Iterate through pairs of adjacent profiles
     for (let i = 0; i < profiles.length - 1; i++) {
@@ -510,9 +504,6 @@ export class GridCalculator {
       const safeLengthMM = (safeLength / this.pxPerMeter) * 1000
       console.log(`Gap ${i + 1}: SafeZone=${safeLengthMM.toFixed(0)}mm (Common overlap of both profiles)`)
       
-      // Use the safe length for plates (not the longer profile)
-      const plateLength = safeLength
-
       if (orientation === 'Vertical') {
         // =================================================================
         // PHYSICALLY CENTERED IN THE GAP (No Axes, Only Edges)
@@ -730,6 +721,9 @@ export class GridCalculator {
     return materialList
   }
 
+  // NOTE: Auto-placement logic removed. Assets are now in src/data/assets/
+  // Manual CAD tools will handle pattern placement via user interaction.
+
   /**
    * Generate complete room with grid and statistics
    */
@@ -740,6 +734,30 @@ export class GridCalculator {
     const profileStats = this.calculateProfileStats(cdProfiles)
     const plateMaterials = this.calculateHeatPlateMaterials(heatPlates)
 
+    // SIMPLE PIPE PREVIEW (Straight lines only)
+    // Instead of calculating complex loops, just draw a straight line inside each plate.
+    const heatingCircuits: HeatingCircuit[] = heatPlates.map((plate, index) => {
+      // Calculate length in pixels
+      const dx = plate.x2 - plate.x1
+      const dy = plate.y2 - plate.y1
+      const lengthPx = Math.sqrt(dx * dx + dy * dy)
+      
+      // Convert to millimeters
+      const lengthMm = (lengthPx / this.pxPerMeter) * 1000
+
+      return {
+        id: `preview-pipe-${index}`,
+        color: '#32CD32', // Standard Green
+        // Simple straight line from Plate Start to Plate End
+        pathData: `M ${plate.x1} ${plate.y1} L ${plate.x2} ${plate.y2}`,
+        length: lengthMm,
+      }
+    })
+
+    // Pipe patterns are now handled by manual CAD tools
+    // Assets are available in src/data/assets/System4.ts
+    const pipePatterns: PipePattern[] = [] // Empty - manual placement only
+
     return {
       ...room,
       cdProfiles,
@@ -747,6 +765,8 @@ export class GridCalculator {
       area,
       profileStats,
       plateMaterials,
+      heatingCircuits, // Now contains simple straight lines
+      pipePatterns, // System 4 pipe patterns at plate ends
     }
   }
 }

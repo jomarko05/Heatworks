@@ -5,6 +5,8 @@ import CalibrationTool from './components/CalibrationTool'
 import Toolbar from './components/Toolbar'
 import RoomPropertiesModal from './components/RoomPropertiesModal'
 import RoomList from './components/RoomList'
+import KeyboardListener from './components/KeyboardListener'
+import AssetMenuOverlay from './components/AssetMenuOverlay'
 import { usePersistence } from './hooks/usePersistence'
 import { useStore } from './store/useStore'
 
@@ -107,6 +109,10 @@ function App() {
 
       {/* Modals */}
       <RoomPropertiesModal />
+      <AssetMenuOverlay />
+      
+      {/* Keyboard Listener (ArchiCAD-style Hotkeys) */}
+      <KeyboardListener />
     </div>
   )
 }

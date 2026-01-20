@@ -1,8 +1,13 @@
 import { create } from 'zustand'
-import { AppState, CalibrationLine, Point, Measurement, Room, SystemType, Orientation } from '../types'
+import { persist } from 'zustand/middleware'
+import { AppState, CalibrationLine, Point, Measurement, Room, SystemType, Orientation, ConnectionSide, GlobalSettings, ManualElement } from '../types'
 import { GridCalculator } from '../utils/GridCalculator'
+import { RegisteredAsset, getAssetById as getStaticAssetById } from '../data/assets/AssetRegistry'
 
 interface Store extends AppState {
+  // Settings
+  settings: GlobalSettings
+  updateSettings: (newSettings: Partial<GlobalSettings>) => void
   // Persistence flag
   isLoaded: boolean
   setIsLoaded: (isLoaded: boolean) => void
@@ -39,24 +44,110 @@ interface Store extends AppState {
   addRoomPoint: (point: Point) => void
   closeRoomPolygon: () => void
   cancelRoomDrawing: () => void
-  setPendingRoomProperties: (name: string, systemType: SystemType, orientation: Orientation) => void
+  setPendingRoomProperties: (
+    name: string,
+    systemType: SystemType,
+    orientation: Orientation,
+    connectionSide?: ConnectionSide
+  ) => void
   finishRoom: () => void
   deleteRoom: (roomId: string) => void
   updateRoom: (roomId: string, updates: Partial<Room>) => void
   updateRoomPoints: (roomId: string, newPoints: Point[]) => void
   finalizeRoomPoints: (roomId: string) => void
+  setConnectionPoint: (roomId: string, point: { x: number; y: number }) => void
   setHoveredRoomId: (roomId: string | null) => void
   hoveredRoomId: string | null
   selectRoom: (roomId: string | null) => void
   selectedRoomId: string | null
+  isSettingConnectionPoint: boolean
+  setIsSettingConnectionPoint: (isActive: boolean) => void
   
   // Stage ref for PDF export
   stageRef: any
   setStageRef: (ref: any) => void
   exportToPDF: () => void
+  
+  // Multi-select & Clipboard (CAD Tools)
+  selectedElementIds: string[] // Array of selected element IDs (rooms, patterns, etc.)
+  setSelectedElementIds: (ids: string[]) => void
+  addToSelection: (id: string) => void
+  removeFromSelection: (id: string) => void
+  clearSelection: () => void
+  clipboard: any[] // Clipboard for copy/paste
+  copyToClipboard: () => void
+  pasteFromClipboard: () => void
+  
+  // Snapping
+  snapEnabled: boolean
+  setSnapEnabled: (enabled: boolean) => void
+  snapThreshold: number // Distance in pixels for snapping (default: 20px)
+  
+  // DRAG STATE
+  // =========================================================
+  isDragging: boolean
+  setIsDragging: (isDragging: boolean) => void
+  dragStartPos: Point | null
+  setDragStartPos: (pos: Point | null) => void
+  
+  // MARQUEE SELECTION
+  // =========================================================
+  selectionRect: { x: number; y: number; width: number; height: number } | null
+  setSelectionRect: (rect: { x: number; y: number; width: number; height: number } | null) => void
+  selectionMode: 'none' | 'marquee' | 'drag' | null
+  setSelectionMode: (mode: 'none' | 'marquee' | 'drag' | null) => void
+  
+  // ASSET MENU & MANUAL PLACEMENT
+  // =========================================================
+  isAssetMenuOpen: boolean
+  toggleAssetMenu: () => void
+  openAssetMenu: () => void
+  closeAssetMenu: () => void
+  placingAsset: RegisteredAsset | null // Asset currently being placed
+  setPlacingAsset: (asset: RegisteredAsset | null) => void
+  manualElements: ManualElement[]
+  addManualElement: (element: ManualElement) => void
+  removeManualElement: (id: string) => void
+  updateManualElement: (id: string, updates: Partial<ManualElement>) => void
+  updateSelectedPositions: (dx: number, dy: number) => void // Move all selected elements by delta
+  
+  // Asset Overrides (for real-time snap anchor calibration)
+  assetOverrides: Record<string, { 
+    snapX?: number
+    snapY?: number
+    anchors90?: Array<{ x: number; y: number }>
+  }>
+  setAssetOverride: (id: string, config: { 
+    snapX?: number
+    snapY?: number
+    anchors90?: Array<{ x: number; y: number }>
+  }) => void
+  
+  // Mirror Mode & Rotation
+  mirrorMode: boolean
+  setMirrorMode: (enabled: boolean) => void
+  mirrorSelected: (axis: 'x' | 'y') => void
+  rotationMode: boolean
+  setRotationMode: (enabled: boolean) => void
+  setElementRotation: (id: string, angle: number) => void
+  rotateSelected: (delta: number) => void
+  
+  // Axis Locking (Orthogonal Movement)
+  activeAxisLock: 'x' | 'y' | null
+  setAxisLock: (axis: 'x' | 'y' | null) => void
+  
+  // Placement Rotation (Manual V/H toggle)
+  placementRotation: number // Global rotation for new elements (0° = Vertical, 90° = Horizontal)
+  setPlacementRotation: (deg: number) => void
+  
+  // Debug Visualization
+  showSnapPoints: boolean // Toggle to show/hide debug snap point dots
+  toggleSnapPoints: () => void
 }
 
-export const useStore = create<Store>((set, get) => ({
+export const useStore = create<Store>()(
+  persist(
+    (set, get) => ({
   // Persistence flag (CRITICAL: prevents saving before data loads)
   isLoaded: false,
   setIsLoaded: (isLoaded) => set({ isLoaded }),
@@ -91,9 +182,49 @@ export const useStore = create<Store>((set, get) => ({
     currentPoints: [],
     pendingRoom: null,
   },
+  manualElements: [], // Manually placed CAD elements
   hoveredRoomId: null,
   selectedRoomId: null,
+  
   stageRef: null,
+
+  // Global Settings with defaults
+  settings: {
+    cdProfileWidth: 60,
+    cdProfileSpacing: 400,
+    wallBuffer: 250,
+    gridMargin: 100,
+    plateWidth: 50,
+    system4Gap: 45.33,
+    system6Gap: 7.2,
+    visualOffset: 30,
+    startPipeLength: 1000, // Default: 1000mm
+    calibration: {
+      rightSideMirrorOffset: 320.335, // Default: 320.335mm (User adjusts this for Right side alignment)
+      induloOffsetY: 0, // Default: 0mm (Vertical correction for Start)
+      svgInternalPaddingX: 40, // Default: 40mm (Compensates for empty space in SVG on x-axis)
+      effectivePipeWidth: 303.85, // Default: 303.85mm (The width of actual pipes for mirroring)
+      visualPipeLength: 300, // Default: 300mm (Overrides logical length for drawing purposes)
+      atforduloOffsetX: 0, // Default: 0mm (Horizontal offset for Turn)
+      atforduloOffsetY: 0, // Default: 0mm (Vertical offset for Turn)
+      vegeOffsetX: 0, // Default: 0mm (Horizontal offset for End)
+      vegeOffsetY: 0, // Default: 0mm (Vertical offset for End)
+    },
+  },
+
+  updateSettings: (newSettings) => {
+    set((state) => ({
+      settings: { ...state.settings, ...newSettings },
+    }))
+    
+    // Recalculate all rooms when settings change
+    const { rooms, pdf } = get()
+    if (pdf.pxPerMeter && rooms.length > 0) {
+      const calculator = new GridCalculator(pdf.pxPerMeter, get().settings)
+      const updatedRooms = rooms.map((room) => calculator.generateRoomGrid(room))
+      set({ rooms: updatedRooms })
+    }
+  },
 
   // PDF actions
   setPDFFile: (file) => {
@@ -305,11 +436,13 @@ export const useStore = create<Store>((set, get) => ({
       points: roomDrawing.currentPoints,
       systemType: 'System 4',
       orientation: 'Vertical',
+      connectionSide: 'bottom', // Default connection side
       cdProfiles: [],
       heatPlates: [],
       area: 0,
       profileStats: [],
       plateMaterials: [],
+      heatingCircuits: [],
     }
 
     set((state) => ({
@@ -321,7 +454,7 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   cancelRoomDrawing: () => {
-    set((state) => ({
+    set(() => ({
       roomDrawing: {
         isActive: false,
         currentPoints: [],
@@ -330,18 +463,19 @@ export const useStore = create<Store>((set, get) => ({
     }))
   },
 
-  setPendingRoomProperties: (name, systemType, orientation) => {
+  setPendingRoomProperties: (name, systemType, orientation, connectionSide) => {
     const { roomDrawing } = get()
     if (roomDrawing.pendingRoom) {
-      set((state) => ({
+      set(() => ({
         roomDrawing: {
-          ...state.roomDrawing,
+          ...roomDrawing,
           pendingRoom: {
             ...roomDrawing.pendingRoom,
             name,
             systemType,
             orientation,
-          },
+            connectionSide: connectionSide ?? roomDrawing.pendingRoom?.connectionSide,
+          } as Room,
         },
       }))
     }
@@ -379,26 +513,12 @@ export const useStore = create<Store>((set, get) => ({
       const room = state.rooms[roomIndex]
       const updatedRoom = { ...room, ...updates }
 
-      console.log(`🔥 STORE: UPDATING ROOM ${roomId}:`, updates)
-      console.log(`   📊 Before:`, { system: room.systemType, orientation: room.orientation })
-      console.log(`   📊 After:`, { system: updatedRoom.systemType, orientation: updatedRoom.orientation })
-      
-      if (updates.systemType) {
-        console.log(`   🎯 UPDATING SYSTEM: ${room.systemType} → ${updates.systemType}`)
-      }
-      if (updates.orientation) {
-        console.log(`   🎯 UPDATING ORIENTATION: ${room.orientation} → ${updates.orientation}`)
-      }
 
       // If system type or orientation changed, regenerate grid
-      if (updates.systemType || updates.orientation) {
+      if (updates.systemType || updates.orientation || updates.connectionSide) {
         if (state.pdf.pxPerMeter) {
-          const calculator = new GridCalculator(state.pdf.pxPerMeter)
+          const calculator = new GridCalculator(state.pdf.pxPerMeter, state.settings)
           const roomWithGrid = calculator.generateRoomGrid(updatedRoom)
-          
-          console.log(`✓ Store: Grid regenerated for room ${roomId}`)
-          console.log(`   CD Profiles: ${roomWithGrid.cdProfiles.length}`)
-          console.log(`   Heat Plates: ${roomWithGrid.heatPlates.length}`)
           
           // FORCE NEW ARRAY REFERENCE with spread operator
           return {
@@ -410,8 +530,6 @@ export const useStore = create<Store>((set, get) => ({
       }
 
       // Otherwise just update the room
-      console.log(`✓ Store: Room ${roomId} updated (no grid recalc)`)
-      
       // FORCE NEW ARRAY REFERENCE with spread operator
       return {
         rooms: [...state.rooms.map((r, i) => i === roomIndex ? updatedRoom : r)],
@@ -440,16 +558,10 @@ export const useStore = create<Store>((set, get) => ({
 
       const room = state.rooms[roomIndex]
 
-      console.log(`🔄 Store: Finalizing points for room ${roomId}, regenerating grid`)
-
       // Regenerate grid with new points
       if (state.pdf.pxPerMeter) {
-        const calculator = new GridCalculator(state.pdf.pxPerMeter)
+        const calculator = new GridCalculator(state.pdf.pxPerMeter, state.settings)
         const roomWithGrid = calculator.generateRoomGrid(room)
-        
-        console.log(`✓ Store: Grid regenerated after dragging`)
-        console.log(`   CD Profiles: ${roomWithGrid.cdProfiles.length}`)
-        console.log(`   Heat Plates: ${roomWithGrid.heatPlates.length}`)
         
         // FORCE NEW ARRAY REFERENCE with spread operator
         return {
@@ -462,12 +574,43 @@ export const useStore = create<Store>((set, get) => ({
     })
   },
 
+  setConnectionPoint: (roomId, point) => {
+    set((state) => {
+      const roomIndex = state.rooms.findIndex((r) => r.id === roomId)
+      
+      if (roomIndex === -1) {
+        console.warn(`❌ Room ${roomId} not found`)
+        return state
+      }
+
+      const room = state.rooms[roomIndex]
+      const updatedRoom = { ...room, connectionPoint: point }
+
+      // Regenerate grid with new connection point
+      if (state.pdf.pxPerMeter) {
+        const calculator = new GridCalculator(state.pdf.pxPerMeter, state.settings)
+        const roomWithGrid = calculator.generateRoomGrid(updatedRoom)
+        
+        return {
+          rooms: [...state.rooms.map((r, i) => i === roomIndex ? roomWithGrid : r)],
+        }
+      } else {
+        // Just update the connection point without regenerating grid
+        return {
+          rooms: [...state.rooms.map((r, i) => i === roomIndex ? updatedRoom : r)],
+        }
+      }
+    })
+  },
+
+  isSettingConnectionPoint: false,
+  setIsSettingConnectionPoint: (isActive) => set({ isSettingConnectionPoint: isActive }),
+
   setHoveredRoomId: (roomId) => {
     set({ hoveredRoomId: roomId })
   },
 
   selectRoom: (roomId) => {
-    console.log('🎯 Selecting room:', roomId)
     set({ selectedRoomId: roomId })
   },
 
@@ -491,23 +634,17 @@ export const useStore = create<Store>((set, get) => ({
     }
 
     try {
-      console.log('📄 Starting vector-based PDF export...')
-      
       // Step 1: Load pdf-lib dynamically
       const { PDFDocument, rgb } = await import('pdf-lib')
-      console.log('✓ pdf-lib loaded')
       
       // Step 2: Fetch and load the original PDF
-      console.log('📥 Fetching original PDF...')
       const existingPdfBytes = await fetch(state.pdf.url).then(res => res.arrayBuffer())
       const pdfDoc = await PDFDocument.load(existingPdfBytes)
-      console.log('✓ Original PDF loaded')
       
       // Step 3: Get the first page
       const pages = pdfDoc.getPages()
       const page = pages[0]
       const { width: pdfWidth, height: pdfHeight } = page.getSize()
-      console.log(`✓ PDF page dimensions: ${pdfWidth.toFixed(2)} x ${pdfHeight.toFixed(2)} points`)
       
       // Step 4: Calculate coordinate conversion scale
       // Canvas uses pixels, PDF uses points (1 point = 1/72 inch)
@@ -516,8 +653,6 @@ export const useStore = create<Store>((set, get) => ({
       const canvasHeight = state.pdf.pageHeight
       const scaleX = pdfWidth / canvasWidth
       const scaleY = pdfHeight / canvasHeight
-      
-      console.log(`📐 Coordinate scale: X=${scaleX.toFixed(4)}, Y=${scaleY.toFixed(4)}`)
       
       // Helper: Convert canvas coordinates to PDF coordinates
       // PDF uses bottom-left origin, canvas uses top-left
@@ -531,13 +666,10 @@ export const useStore = create<Store>((set, get) => ({
         return pixels * scaleX
       }
       
-      console.log('🎨 Drawing heating system elements...')
       let totalElements = 0
       
       // Step 5: Iterate through all rooms and draw elements
       for (const room of state.rooms) {
-        console.log(`  Processing room: ${room.name}`)
-        
         // Draw Blue CD Profiles (60mm width)
         if (room.cdProfiles && room.cdProfiles.length > 0) {
           const profileWidth = mmToPoints(60)
@@ -557,7 +689,6 @@ export const useStore = create<Store>((set, get) => ({
             })
             totalElements++
           }
-          console.log(`    ✓ Drew ${room.cdProfiles.length} blue CD profiles`)
         }
         
         // Draw Brown Heat Plates (50mm width)
@@ -579,7 +710,6 @@ export const useStore = create<Store>((set, get) => ({
             })
             totalElements++
           }
-          console.log(`    ✓ Drew ${room.heatPlates.length} brown heat plates`)
         }
         
         // Draw Green Heating Pipes (16mm width)
@@ -601,29 +731,23 @@ export const useStore = create<Store>((set, get) => ({
               opacity: 1.0,
             })
           }
-          console.log(`    ✓ Drew ${room.heatPlates.length} green heating pipes`)
         }
       }
       
-      console.log(`✓ Total elements drawn: ${totalElements}`)
-      
       // Step 6: Save the modified PDF
-      console.log('💾 Saving modified PDF...')
       const pdfBytes = await pdfDoc.save()
       
       // Step 7: Trigger download
       const timestamp = new Date().toISOString().slice(0, 10)
       const fileName = `mennyezetfutes_terv_${timestamp}.pdf`
       
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+      const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
       link.download = fileName
       link.click()
       URL.revokeObjectURL(url)
-      
-      console.log(`✓ PDF saved: ${fileName}`)
       alert(`✓ Vektoros PDF sikeresen exportálva!\nFájl: ${fileName}\n\nElemek: ${totalElements} db`)
       
     } catch (error) {
@@ -631,4 +755,222 @@ export const useStore = create<Store>((set, get) => ({
       alert('Hiba történt a PDF exportálás során.\nKérem telepítse: npm install pdf-lib')
     }
   },
-}))
+
+  // =========================================================
+  // MULTI-SELECT & CLIPBOARD (CAD Tools)
+  // =========================================================
+  selectedElementIds: [],
+  setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
+  addToSelection: (id) => {
+    const state = get()
+    if (!state.selectedElementIds.includes(id)) {
+      set({ selectedElementIds: [...state.selectedElementIds, id] })
+    }
+  },
+  removeFromSelection: (id) => {
+    const state = get()
+    set({ selectedElementIds: state.selectedElementIds.filter(eid => eid !== id) })
+  },
+  clearSelection: () => set({ selectedElementIds: [] }),
+  
+  clipboard: [],
+  copyToClipboard: () => {
+    const state = get()
+    // Copy selected elements to clipboard
+    // For now, copy selected rooms
+    const selectedRooms = state.rooms.filter(r => 
+      state.selectedElementIds.includes(r.id) || r.id === state.selectedRoomId
+    )
+    set({ clipboard: selectedRooms })
+  },
+  pasteFromClipboard: () => {
+    const state = get()
+    if (state.clipboard.length === 0) {
+      return
+    }
+    // TODO: Paste elements from clipboard with offset
+  },
+
+  // =========================================================
+  // SNAPPING (The Magnet)
+  // =========================================================
+  snapEnabled: true,
+  setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
+  snapThreshold: 20, // 20px snap distance
+
+  // =========================================================
+  // DRAG STATE
+  // =========================================================
+  isDragging: false,
+  setIsDragging: (isDragging) => set({ isDragging }),
+  dragStartPos: null,
+  setDragStartPos: (pos) => set({ dragStartPos: pos }),
+
+  // =========================================================
+  // MARQUEE SELECTION
+  // =========================================================
+  selectionRect: null,
+  setSelectionRect: (rect) => set({ selectionRect: rect }),
+  selectionMode: null,
+  setSelectionMode: (mode) => set({ selectionMode: mode }),
+
+  // =========================================================
+  // ASSET MENU & MANUAL PLACEMENT
+  // =========================================================
+  isAssetMenuOpen: false,
+  toggleAssetMenu: () => set((state) => ({ isAssetMenuOpen: !state.isAssetMenuOpen })),
+  openAssetMenu: () => set({ isAssetMenuOpen: true }),
+  closeAssetMenu: () => set({ isAssetMenuOpen: false }),
+  
+  placingAsset: null,
+  setPlacingAsset: (asset) => set({ placingAsset: asset }),
+  
+  addManualElement: (element) => {
+    set((state) => ({
+      manualElements: [...state.manualElements, element],
+      placingAsset: null, // Clear placement mode after adding
+    }))
+  },
+  removeManualElement: (id) => {
+    set((state) => ({
+      manualElements: state.manualElements.filter((el) => el.id !== id),
+    }))
+  },
+  updateManualElement: (id, updates) => {
+    set((state) => ({
+      manualElements: state.manualElements.map((el) =>
+        el.id === id ? { ...el, ...updates } : el
+      ),
+    }))
+  },
+  updateSelectedPositions: (dx, dy) => {
+    set((state) => ({
+      manualElements: state.manualElements.map((el) =>
+        state.selectedElementIds.includes(el.id)
+          ? {
+              ...el,
+              position: {
+                x: el.position.x + dx,
+                y: el.position.y + dy,
+              },
+            }
+          : el
+      ),
+    }))
+  },
+  
+  // Asset Overrides
+  assetOverrides: {},
+  setAssetOverride: (id, config) => {
+    set((state) => ({
+      assetOverrides: {
+        ...state.assetOverrides,
+        [id]: {
+          ...state.assetOverrides[id],
+          ...config,
+        },
+      },
+    }))
+  },
+  
+  // Mirror Mode & Rotation
+  mirrorMode: false,
+  setMirrorMode: (enabled) => set({ mirrorMode: enabled }),
+  mirrorSelected: (axis) => {
+    set((state) => ({
+      manualElements: state.manualElements.map((el) =>
+        state.selectedElementIds.includes(el.id)
+          ? {
+              ...el,
+              scaleX: axis === 'x' ? el.scaleX * -1 : el.scaleX,
+              scaleY: axis === 'y' ? el.scaleY * -1 : el.scaleY,
+            }
+          : el
+      ),
+    }))
+  },
+  rotationMode: false,
+  setRotationMode: (enabled) => set({ rotationMode: enabled }),
+  setElementRotation: (id, angle) => {
+    set((state) => ({
+      manualElements: state.manualElements.map((el) =>
+        el.id === id ? { ...el, rotation: angle } : el
+      ),
+    }))
+  },
+  rotateSelected: (delta) => {
+    set((state) => ({
+      manualElements: state.manualElements.map((el) =>
+        state.selectedElementIds.includes(el.id)
+          ? {
+              ...el,
+              rotation: ((el.rotation + delta) % 360 + 360) % 360, // Normalize to 0-360
+            }
+          : el
+      ),
+    }))
+  },
+  
+  // Axis Locking (Orthogonal Movement)
+  activeAxisLock: null,
+  setAxisLock: (axis) => set({ activeAxisLock: axis }),
+  
+  // Placement Rotation (Manual V/H toggle)
+  placementRotation: 0, // Default: Vertical (0°)
+  setPlacementRotation: (deg) => set({ placementRotation: deg }),
+  
+  // Debug Visualization
+  showSnapPoints: false,
+  toggleSnapPoints: () => set((state) => ({ showSnapPoints: !state.showSnapPoints })),
+    }),
+    {
+      name: 'heating-designer-storage',
+      partialize: (state) => ({
+        // Only save these fields (don't save temporary UI states like selection or drag)
+        manualElements: state.manualElements,
+        assetOverrides: state.assetOverrides,
+        settings: state.settings, // Include grid settings
+        rooms: state.rooms, // Include rooms (which contain heatPlates)
+      }),
+    }
+  )
+)
+
+/**
+ * Get asset by ID with store overrides merged in
+ * This is a wrapper around the static getAssetById that merges runtime overrides
+ * RECONNECT SLIDERS: Applies overrides to the first anchor dynamically
+ */
+export function getAssetById(id: string): RegisteredAsset | undefined {
+  const store = useStore.getState()
+  const staticAsset = getStaticAssetById(id)
+  
+  if (!staticAsset) return undefined
+  
+  const override = store.assetOverrides[id]
+  if (!override) return staticAsset
+  
+  // Clone to avoid mutating base
+  const asset = { 
+    ...staticAsset, 
+    anchors: staticAsset.anchors ? [...staticAsset.anchors] : [{ x: 100, y: 1100 }],
+    anchors90: staticAsset.anchors90 ? [...staticAsset.anchors90] : undefined
+  }
+  
+  // Apply Slider Overrides to First Anchor (for 0° rotation)
+  if (asset.anchors.length > 0) {
+    if (override.snapX !== undefined) {
+      asset.anchors[0] = { ...asset.anchors[0], x: override.snapX }
+    }
+    if (override.snapY !== undefined) {
+      asset.anchors[0] = { ...asset.anchors[0], y: override.snapY }
+    }
+  }
+  
+  // Apply anchors90 override if provided
+  if (override.anchors90) {
+    asset.anchors90 = override.anchors90
+  }
+  
+  return asset
+}

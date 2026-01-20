@@ -91,6 +91,7 @@ export default function RoomListItem({ roomId }: RoomListItemProps) {
       onClick={handleCardClick}
       onMouseEnter={() => setHoveredRoomId(roomId)}
       onMouseLeave={() => setHoveredRoomId(null)}
+      style={{ touchAction: 'manipulation' }} // Prevent default touch behaviors while allowing taps
     >
       {/* ========== HEADER ========== */}
       <div className="flex items-center justify-between mb-2">

@@ -4,6 +4,8 @@ import path from 'path'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  // GitHub Pages deployment base path
+  base: '/Heatworks/',
   plugins: [react()],
   resolve: {
     alias: {
